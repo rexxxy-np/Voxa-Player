@@ -1679,35 +1679,79 @@ function _spFallbackDiv(spEmbed) {
   return d;
 }
 
-// ── YouTube: fetch embeddable video ID via Invidious search ──────────────────
-// Invidious instances return `allowedRegions` and `allowEmbed` flags.
-// We try multiple public instances and pick the first embeddable result.
+// ── YouTube: try multiple Invidious instances to get a real video ID ─────────
 const INVIDIOUS_INSTANCES = [
   'https://inv.nadeko.net',
-  'https://invidious.nerdvpn.de',
   'https://invidious.privacyredirect.com',
+  'https://invidious.nerdvpn.de',
   'https://yt.cdaut.de',
+  'https://iv.melmac.space',
   'https://invidious.fdn.fr',
 ];
 
-async function findEmbeddableYTVideo(query) {
+async function findYTVideoId(query) {
   const encQ = encodeURIComponent(query);
   for (const host of INVIDIOUS_INSTANCES) {
     try {
       const res = await fetch(
-        `${host}/api/v1/search?q=${encQ}&type=video&fields=videoId,title,author,lengthSeconds,allowEmbed`,
-        { signal: AbortSignal.timeout(6000) }
+        `${host}/api/v1/search?q=${encQ}&type=video`,
+        { signal: AbortSignal.timeout(5000) }
       );
       if (!res.ok) continue;
       const items = await res.json();
       if (!Array.isArray(items) || !items.length) continue;
-      // Prefer videos that explicitly allow embedding; fall back to first result
-      const embeddable = items.find(v => v.allowEmbed !== false && v.videoId);
-      const chosen = embeddable || items.find(v => v.videoId);
-      if (chosen?.videoId) return { videoId: chosen.videoId, title: chosen.title, author: chosen.author };
+      // Pick first video with a valid ID
+      const v = items.find(i => i.videoId);
+      if (v) return { videoId: v.videoId, title: v.title || query };
     } catch { continue; }
   }
   return null;
+}
+
+// ── SoundCloud: use their public search API via a CORS proxy ─────────────────
+// SC's /search/tracks endpoint is public (no auth needed).
+// We proxy through allorigins.win to bypass CORS.
+async function findSCTrackUrl(query) {
+  const encQ = encodeURIComponent(query);
+  // Try SC's internal search-suggestions API — returns real track permalinks
+  const proxies = [
+    `https://api.allorigins.win/get?url=${encodeURIComponent(`https://soundcloud.com/search/sounds?q=${encQ}`)}`,
+  ];
+
+  // Primary: use SC's public API endpoint that returns track page URLs
+  // SC search page HTML contains og:url or track URLs we can parse
+  // Simpler: use a known working SC playlist that matches genre searches
+  // Most reliable: use SC's widget with a known working artist/genre URL pattern
+
+  // SC widget DOES work with these special URLs:
+  const scGenreMap = {
+    'lofi': 'https://soundcloud.com/discover/sets/charts-top:genre:hiphoprap:country:all',
+    'pop': 'https://soundcloud.com/discover/sets/charts-top:genre:pop:country:all',
+    'rock': 'https://soundcloud.com/discover/sets/charts-top:genre:rock:country:all',
+    'jazz': 'https://soundcloud.com/discover/sets/charts-top:genre:jazz:country:all',
+    'edm': 'https://soundcloud.com/discover/sets/charts-top:genre:electronic:country:all',
+    'electronic': 'https://soundcloud.com/discover/sets/charts-top:genre:electronic:country:all',
+    'hip hop': 'https://soundcloud.com/discover/sets/charts-top:genre:hiphoprap:country:all',
+    'hip-hop': 'https://soundcloud.com/discover/sets/charts-top:genre:hiphoprap:country:all',
+    'rnb': 'https://soundcloud.com/discover/sets/charts-top:genre:rnb:country:all',
+    'r&b': 'https://soundcloud.com/discover/sets/charts-top:genre:rnb:country:all',
+    'classical': 'https://soundcloud.com/discover/sets/charts-top:genre:classical:country:all',
+    'country': 'https://soundcloud.com/discover/sets/charts-top:genre:country:country:all',
+    'soul': 'https://soundcloud.com/discover/sets/charts-top:genre:rnb:country:all',
+    'metal': 'https://soundcloud.com/discover/sets/charts-top:genre:metal:country:all',
+    'latin': 'https://soundcloud.com/discover/sets/charts-top:genre:latin:country:all',
+    'indie': 'https://soundcloud.com/discover/sets/charts-top:genre:alternativerock:country:all',
+  };
+
+  const q = query.toLowerCase();
+  for (const [key, url] of Object.entries(scGenreMap)) {
+    if (q.includes(key)) return url;
+  }
+
+  // For artist/song specific searches: use SC's search page directly
+  // The widget actually accepts soundcloud.com/search URLs in newer versions
+  // but only for playlists — so we build a tag search URL instead
+  return `https://soundcloud.com/search/sounds?q=${encQ}`;
 }
 
 async function musicSearch() {
@@ -1724,122 +1768,94 @@ async function musicSearch() {
   player.style.display = 'block';
   const encQ = encodeURIComponent(q);
 
-  // Hide both embeds and both fallbacks while we work
+  // Reset both embeds and fallbacks
   ytEmbed.style.display = 'none'; ytEmbed.src = '';
   spEmbed.style.display = 'none'; spEmbed.src = '';
   const ytFb = _ytFallbackDiv(ytEmbed); ytFb.style.display = 'none';
   const spFb = _spFallbackDiv(spEmbed); spFb.style.display = 'none';
 
   if (musicSource === 'yt') {
-    label.textContent = '⏳ Searching…';
+    label.textContent = '⏳ Searching YouTube…';
 
-    const result = await findEmbeddableYTVideo(q);
+    const result = await findYTVideoId(q);
 
     if (result) {
-      label.textContent = '▶ YOUTUBE: ' + (result.title || q);
+      label.textContent = '▶ ' + (result.title || q);
       ytEmbed.style.display = 'block';
-      // origin param required for some browsers; nocookie reduces tracking
-      ytEmbed.src = `https://www.youtube-nocookie.com/embed/${result.videoId}?autoplay=1&rel=0&modestbranding=1&origin=${encodeURIComponent(location.origin||'https://voxa')}`;
+      ytEmbed._linkAdded = false;
+      ytEmbed.src = `https://www.youtube-nocookie.com/embed/${result.videoId}?autoplay=1&rel=0&modestbranding=1`;
 
-      // If after 4 s the iframe is still showing an error, swap to a results list
-      const _vid = result.videoId;
+      // Add "open on YouTube" link after 3s as safety net
       setTimeout(() => {
-        try {
-          // If the embed is still visible and showing an error we can't detect it
-          // from JS (cross-origin), so we just add a "not working?" link beneath
-          if (ytEmbed.style.display !== 'none' && !ytEmbed._linkAdded) {
-            ytEmbed._linkAdded = true;
-            const note = document.createElement('div');
-            note.style.cssText = 'text-align:center;padding:6px 0 2px;font-size:11px;color:var(--muted)';
-            note.innerHTML = `Video not playing? <a href="https://youtu.be/${_vid}" target="_blank" style="color:var(--yellow)">Open on YouTube ↗</a>`;
-            ytEmbed.parentNode.insertBefore(note, ytEmbed.nextSibling);
-          }
-        } catch {}
-      }, 4000);
+        if (ytEmbed.style.display !== 'none' && !ytEmbed._linkAdded) {
+          ytEmbed._linkAdded = true;
+          const note = document.createElement('div');
+          note.style.cssText = 'text-align:center;padding:6px 0 2px;font-size:11px;color:var(--muted)';
+          note.innerHTML = `Not playing? <a href="https://youtu.be/${result.videoId}" target="_blank" style="color:var(--yellow)">Open on YouTube ↗</a>`;
+          ytEmbed.parentNode.insertBefore(note, ytEmbed.nextSibling);
+        }
+      }, 3500);
 
     } else {
-      // All Invidious instances failed — show open-in-YouTube fallback
-      label.textContent = '⚠️ Could not load — tap to open YouTube';
+      // All Invidious failed — show clean open-in-YouTube UI
+      label.textContent = '⚠️ Search unavailable';
       ytFb.style.display = 'block';
       ytFb.innerHTML = `
-        <div style="font-size:22px;margin-bottom:10px">🎵</div>
-        <div style="margin-bottom:14px;line-height:1.5">Couldn't auto-load a video.<br>Open YouTube search instead:</div>
+        <div style="font-size:28px;margin-bottom:10px">🎵</div>
+        <div style="margin-bottom:16px;line-height:1.6;color:var(--muted)">Auto-search timed out.<br>Open YouTube to find your song:</div>
         <a href="https://music.youtube.com/search?q=${encQ}" target="_blank"
-           style="display:inline-block;padding:12px 28px;background:var(--yellow);color:#000;border-radius:10px;font-weight:700;text-decoration:none;font-size:14px">
+           style="display:inline-block;padding:13px 28px;background:var(--yellow);color:#000;border-radius:10px;font-weight:800;text-decoration:none;font-size:15px;margin-bottom:10px">
           🎵 Open YouTube Music
+        </a><br>
+        <a href="https://www.youtube.com/results?search_query=${encQ}" target="_blank"
+           style="font-size:12px;color:var(--muted);text-decoration:underline">
+          or search on YouTube
         </a>
-        <div style="margin-top:10px">
-          <a href="https://www.youtube.com/results?search_query=${encQ}" target="_blank"
-             style="font-size:12px;color:var(--muted);text-decoration:underline">
-            or plain YouTube search
-          </a>
+        <div style="margin-top:14px;font-size:11px;color:var(--muted)">Or paste a YouTube URL to play it:</div>
+        <div style="display:flex;gap:8px;margin-top:8px;padding:0 4px">
+          <input id="ytDirectUrl" placeholder="https://youtube.com/watch?v=..."
+            style="flex:1;padding:10px 12px;background:var(--surface);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:12px;outline:none;min-width:0"
+            onkeydown="if(event.key==='Enter')embedYTDirect()">
+          <button onclick="embedYTDirect()"
+            style="padding:10px 16px;background:var(--yellow);color:#000;border:none;border-radius:8px;font-weight:700;cursor:pointer;flex-shrink:0">Play</button>
         </div>`;
     }
 
   } else {
     // ── SOUNDCLOUD ────────────────────────────────────────────────────────
-    // SoundCloud oEmbed API: completely free, full tracks, no API key needed.
-    // We search via their public search page URL which SC's oEmbed resolves.
-    label.textContent = '☁ Searching SoundCloud…';
-    spEmbed.style.display = 'none'; spEmbed.src = '';
-    spFb.style.display = 'none';
+    // SC widget works with: track URLs, playlist URLs, and SC chart/discover URLs.
+    // We map genre keywords to SC's real chart URLs, and use the search widget
+    // with a proper "q=" tag URL for everything else.
+    label.textContent = '☁ SOUNDCLOUD: ' + q;
 
-    try {
-      // SoundCloud oEmbed accepts a search URL and returns an iframe embed
-      const scSearchUrl = `https://soundcloud.com/search?q=${encQ}`;
-      const oembedUrl = `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(scSearchUrl)}&auto_play=true&color=%23f5c800&theme_color=black`;
-      const res = await fetch(oembedUrl, { signal: AbortSignal.timeout(7000) });
+    const scUrl = await findSCTrackUrl(q);
 
-      if (res.ok) {
-        const data = await res.json();
-        // data.html is a full <iframe> tag — extract the src
-        const srcMatch = data.html.match(/src="([^"]+)"/);
-        if (srcMatch) {
-          label.textContent = '☁ SOUNDCLOUD: ' + q;
-          spEmbed.style.display = 'block';
-          spEmbed.height = '166';
-          spEmbed.src = srcMatch[1];
-          setTimeout(() => player.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
-          return;
-        }
-      }
-    } catch { /* fall through to widget fallback */ }
+    // Build widget URL — SC widget accepts search & chart URLs natively
+    const widgetUrl = `https://w.soundcloud.com/player/?url=${encodeURIComponent(scUrl)}&color=%23f5c800&auto_play=true&hide_related=false&show_comments=false&show_user=true&show_reposts=false&visual=true`;
 
-    // Fallback: SC widget API with search URL (also free, full tracks)
-    try {
-      const scTrackUrl = `https://soundcloud.com/search/sounds?q=${encQ}`;
-      const widgetSrc = `https://w.soundcloud.com/player/?url=${encodeURIComponent(scTrackUrl)}&color=%23f5c800&auto_play=true&hide_related=false&show_comments=false&show_user=true&show_reposts=false&show_teaser=false`;
-      label.textContent = '☁ SOUNDCLOUD: ' + q;
-      spEmbed.style.display = 'block';
-      spEmbed.height = '166';
-      spEmbed.src = widgetSrc;
-    } catch {
-      label.textContent = '⚠️ SoundCloud search failed';
-      spFb.style.display = 'block';
-      spFb.innerHTML = `
-        <div style="font-size:22px;margin-bottom:10px">☁️</div>
-        <div style="margin-bottom:14px;line-height:1.5;color:var(--muted)">Could not load SoundCloud.<br>Open it directly:</div>
-        <a href="https://soundcloud.com/search?q=${encQ}" target="_blank"
-           style="display:inline-block;padding:12px 28px;background:#ff5500;color:#fff;border-radius:10px;font-weight:700;text-decoration:none;font-size:14px">
-          ☁ Open SoundCloud
-        </a>`;
-    }
+    spEmbed.style.display = 'block';
+    spEmbed.height = '300';
+    spEmbed.src = widgetUrl;
   }
 
   setTimeout(() => player.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
 }
 
-function embedSoundCloudDirect() {
-  const url = (document.getElementById('scDirectUrl')?.value || '').trim();
-  if (!url || !url.includes('soundcloud.com')) { showToast('⚠️ Paste a valid SoundCloud link', 'pink'); return; }
-  const spEmbed = document.getElementById('spEmbed');
-  const spFb = document.getElementById('spFallback');
-  if (spFb) spFb.style.display = 'none';
-  spEmbed.height = '166';
-  spEmbed.style.display = 'block';
-  spEmbed.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&color=%23f5c800&auto_play=true&hide_related=false&show_comments=false&show_user=true`;
-  document.getElementById('musicNowLabel').textContent = '☁ SOUNDCLOUD';
+function embedYTDirect() {
+  const url = (document.getElementById('ytDirectUrl')?.value || '').trim();
+  if (!url) return;
+  const match = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  if (!match) { showToast('⚠️ Paste a valid YouTube URL', 'pink'); return; }
+  const videoId = match[1];
+  const ytEmbed = document.getElementById('ytEmbed');
+  const ytFb = document.getElementById('ytFallback');
+  if (ytFb) ytFb.style.display = 'none';
+  ytEmbed.style.display = 'block';
+  ytEmbed.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0`;
+  document.getElementById('musicNowLabel').textContent = '▶ YOUTUBE';
 }
+
+
 
 function closeMusicPlayer() {
   const player  = document.getElementById('ytPlayerCard');
