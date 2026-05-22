@@ -1659,7 +1659,7 @@ function musicSearchQuery(q) {
 function scSearchQuery(q) { musicSearchQuery(q); }
 function scSearch() { musicSearch(); }
 
-function musicSearch() {
+async function musicSearch() {
   const q = document.getElementById('ytSearchInput').value.trim();
   if (!q) return;
 
@@ -1675,21 +1675,107 @@ function musicSearch() {
   const encQ = encodeURIComponent(q);
 
   if (musicSource === 'yt') {
-    label.textContent = '\u25b6 YOUTUBE: ' + q;
+    label.textContent = '\u23f3 Searching YouTube...';
     spEmbed.style.display = 'none';
     spEmbed.src = '';
     ytEmbed.style.display = 'block';
-    // YouTube search-list embed: plays the first matching video
-    ytEmbed.src = 'https://www.youtube-nocookie.com/embed?listType=search&list=' + encQ + '&autoplay=1&rel=0&modestbranding=1';
+    ytEmbed.src = '';
+
+    // YouTube removed listType=search embed support.
+    // We use the Piped API (open-source YT frontend) to get the first video ID,
+    // then embed it directly — no API key needed.
+    try {
+      const apis = [
+        'https://pipedapi.kavin.rocks',
+        'https://pipedapi.adminforge.de',
+        'https://piped-api.garudalinux.org',
+      ];
+      let videoId = null;
+      for (const api of apis) {
+        try {
+          const res = await fetch(`${api}/search?q=${encQ}&filter=videos`, { signal: AbortSignal.timeout(5000) });
+          if (!res.ok) continue;
+          const data = await res.json();
+          const first = data.items?.find(i => i.url && i.url.startsWith('/watch'));
+          if (first) { videoId = first.url.replace('/watch?v=', ''); break; }
+        } catch(e) { continue; }
+      }
+      if (videoId) {
+        label.textContent = '\u25b6 YOUTUBE: ' + q;
+        ytEmbed.src = 'https://www.youtube-nocookie.com/embed/' + videoId + '?autoplay=1&rel=0&modestbranding=1';
+      } else {
+        // Fallback: open YouTube search in a new tab and show message
+        label.textContent = '\u26a0\ufe0f Could not auto-play — tap to open YouTube';
+        ytEmbed.style.display = 'none';
+        const fallbackDiv = document.getElementById('ytFallback') || (() => {
+          const d = document.createElement('div');
+          d.id = 'ytFallback';
+          d.style.cssText = 'padding:24px;text-align:center;color:var(--muted);font-size:13px';
+          ytEmbed.parentNode.insertBefore(d, ytEmbed);
+          return d;
+        })();
+        fallbackDiv.style.display = 'block';
+        fallbackDiv.innerHTML = `<div style="margin-bottom:12px">YouTube search embed is blocked.<br>Open in YouTube instead:</div>
+          <a href="https://music.youtube.com/search?q=${encQ}" target="_blank"
+             style="display:inline-block;padding:12px 24px;background:var(--yellow);color:#000;border-radius:10px;font-weight:700;text-decoration:none">
+            🎵 Open in YouTube Music
+          </a>`;
+      }
+    } catch(e) {
+      label.textContent = '\u26a0\ufe0f Search failed';
+    }
+
   } else {
+    // Spotify removed /embed/search — use the track embed via open.spotify.com search link
     label.textContent = '\u25cf SPOTIFY: ' + q;
     ytEmbed.style.display = 'none';
     ytEmbed.src = '';
     spEmbed.style.display = 'block';
-    spEmbed.src = 'https://open.spotify.com/embed/search/' + encQ + '?utm_source=generator&theme=0';
+
+    // Try to get a real Spotify track ID via oEmbed (works for direct URLs)
+    // Since Spotify killed search embed, we show a styled open-link instead
+    const fallbackDiv = document.getElementById('spFallback') || (() => {
+      const d = document.createElement('div');
+      d.id = 'spFallback';
+      d.style.cssText = 'padding:24px;text-align:center;color:var(--muted);font-size:13px';
+      spEmbed.parentNode.insertBefore(d, spEmbed);
+      return d;
+    })();
+
+    spEmbed.style.display = 'none';
+    spEmbed.src = '';
+    fallbackDiv.style.display = 'block';
+    fallbackDiv.innerHTML = `<div style="margin-bottom:12px;color:var(--muted)">Spotify search embed was removed by Spotify.<br>Open in Spotify instead:</div>
+      <a href="https://open.spotify.com/search/${encQ}" target="_blank"
+         style="display:inline-block;padding:12px 24px;background:#1db954;color:#fff;border-radius:10px;font-weight:700;text-decoration:none;margin-bottom:8px">
+        🎵 Search on Spotify
+      </a>
+      <div style="margin-top:10px;font-size:11px;color:var(--muted)">Or paste a Spotify track link below to embed it:</div>
+      <div style="display:flex;gap:8px;margin-top:8px;padding:0 8px">
+        <input id="spDirectUrl" placeholder="https://open.spotify.com/track/..." 
+          style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:12px;outline:none"
+          onkeydown="if(event.key==='Enter')embedSpotifyDirect()">
+        <button onclick="embedSpotifyDirect()" 
+          style="padding:10px 14px;background:var(--yellow);color:#000;border:none;border-radius:8px;font-weight:700;cursor:pointer">Go</button>
+      </div>`;
   }
 
   setTimeout(() => player.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
+}
+
+function embedSpotifyDirect() {
+  const url = document.getElementById('spDirectUrl')?.value.trim();
+  if (!url) return;
+  // Extract track/album/playlist ID from Spotify URL
+  const match = url.match(/open\.spotify\.com\/(track|album|playlist|episode)\/([a-zA-Z0-9]+)/);
+  if (!match) { showToast('⚠️ Invalid Spotify URL', 'pink'); return; }
+  const [, type, id] = match;
+  const spEmbed = document.getElementById('spEmbed');
+  const fallbackDiv = document.getElementById('spFallback');
+  if (fallbackDiv) fallbackDiv.style.display = 'none';
+  spEmbed.style.display = 'block';
+  spEmbed.src = `https://open.spotify.com/embed/${type}/${id}?utm_source=generator&theme=0`;
+  document.getElementById('musicNowLabel').textContent = '\u25cf SPOTIFY: ' + type + ' / ' + id;
 }
 
 function closeMusicPlayer() {
@@ -1699,6 +1785,8 @@ function closeMusicPlayer() {
   const hint    = document.getElementById('musicHint');
   ytEmbed.src = ''; spEmbed.src = '';
   ytEmbed.style.display = 'none'; spEmbed.style.display = 'none';
+  const ytFb = document.getElementById('ytFallback'); if (ytFb) ytFb.style.display = 'none';
+  const spFb = document.getElementById('spFallback'); if (spFb) spFb.style.display = 'none';
   player.style.display = 'none';
   hint.style.display = 'block';
 }
