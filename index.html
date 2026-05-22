@@ -1443,7 +1443,7 @@ input[type=range].boost-slider::-webkit-slider-thumb {
         </button>
         <button id="srcSP" onclick="setMusicSource('sp')"
           style="flex:1;padding:9px;border-radius:8px;border:none;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:14px;letter-spacing:1px;background:transparent;color:var(--muted);transition:all .2s">
-          &#11044; SPOTIFY
+          &#9728; SOUNDCLOUD
         </button>
       </div>
 
@@ -1486,9 +1486,8 @@ input[type=range].boost-slider::-webkit-slider-thumb {
         <div style="overflow:hidden;border-radius:0 0 16px 16px">
           <iframe id="ytEmbed" style="display:none" width="100%" height="200" frameborder="0"
             allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>
-          <iframe id="spEmbed" style="display:none" width="100%" height="352" frameborder="0"
-            allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-            allowfullscreen></iframe>
+          <iframe id="spEmbed" style="display:none" width="100%" height="166" frameborder="0"
+            allow="autoplay" scrolling="no"></iframe>
         </div>
       </div>
 
@@ -1497,7 +1496,7 @@ input[type=range].boost-slider::-webkit-slider-thumb {
         <div class="card-body" style="text-align:center;padding:28px 16px">
           <div style="font-size:36px;margin-bottom:10px">&#127925;</div>
           <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:16px;color:var(--yellow);letter-spacing:1px;margin-bottom:6px">SEARCH TO START PLAYING</div>
-          <div style="font-size:12px;color:var(--muted);line-height:1.6">Type a song or artist above and tap search.<br>Toggle between YouTube Music and Spotify.</div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.6">Type a song or artist above and tap search.<br>Toggle between YouTube Music and SoundCloud.</div>
         </div>
       </div>
 
@@ -1643,11 +1642,10 @@ function setMusicSource(src) {
     spBtn.style.background = 'transparent';   spBtn.style.color = 'var(--muted)';
     label.textContent = '\u266b YOUTUBE MUSIC SEARCH';
   } else {
-    spBtn.style.background = '#1db954'; spBtn.style.color = '#fff';
+    spBtn.style.background = '#ff5500'; spBtn.style.color = '#fff';
     ytBtn.style.background = 'transparent'; ytBtn.style.color = 'var(--muted)';
-    label.textContent = '\u266b SPOTIFY SEARCH';
+    label.textContent = '\u266b SOUNDCLOUD SEARCH';
   }
-  // Re-run current search in new source if something is playing
   const q = document.getElementById('ytSearchInput').value.trim();
   if (q) musicSearch();
 }
@@ -1779,45 +1777,68 @@ async function musicSearch() {
     }
 
   } else {
-    // ── SPOTIFY ──────────────────────────────────────────────────────────
-    // Spotify removed /embed/search in 2024. Direct track embeds still work.
-    // We show a search link + a paste-URL input so users can embed any track.
-    label.textContent = '● SPOTIFY: ' + q;
-    spFb.style.display = 'block';
-    spFb.innerHTML = `
-      <div style="font-size:22px;margin-bottom:10px">🟢</div>
-      <div style="margin-bottom:14px;line-height:1.5;color:var(--muted)">
-        Spotify removed search embedding.<br>Search on Spotify, then paste the link here to embed:
-      </div>
-      <a href="https://open.spotify.com/search/${encQ}" target="_blank"
-         style="display:inline-block;padding:12px 28px;background:#1db954;color:#fff;border-radius:10px;font-weight:700;text-decoration:none;font-size:14px;margin-bottom:16px">
-        🔍 Search "${q}" on Spotify
-      </a>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Paste a Spotify track / album / playlist link to embed it here:</div>
-      <div style="display:flex;gap:8px;padding:0 4px">
-        <input id="spDirectUrl" placeholder="https://open.spotify.com/track/…"
-          style="flex:1;padding:10px 12px;background:var(--surface);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:12px;outline:none;min-width:0"
-          onkeydown="if(event.key==='Enter')embedSpotifyDirect()">
-        <button onclick="embedSpotifyDirect()"
-          style="padding:10px 16px;background:var(--yellow);color:#000;border:none;border-radius:8px;font-weight:700;cursor:pointer;flex-shrink:0">Embed</button>
-      </div>`;
+    // ── SOUNDCLOUD ────────────────────────────────────────────────────────
+    // SoundCloud oEmbed API: completely free, full tracks, no API key needed.
+    // We search via their public search page URL which SC's oEmbed resolves.
+    label.textContent = '☁ Searching SoundCloud…';
+    spEmbed.style.display = 'none'; spEmbed.src = '';
+    spFb.style.display = 'none';
+
+    try {
+      // SoundCloud oEmbed accepts a search URL and returns an iframe embed
+      const scSearchUrl = `https://soundcloud.com/search?q=${encQ}`;
+      const oembedUrl = `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(scSearchUrl)}&auto_play=true&color=%23f5c800&theme_color=black`;
+      const res = await fetch(oembedUrl, { signal: AbortSignal.timeout(7000) });
+
+      if (res.ok) {
+        const data = await res.json();
+        // data.html is a full <iframe> tag — extract the src
+        const srcMatch = data.html.match(/src="([^"]+)"/);
+        if (srcMatch) {
+          label.textContent = '☁ SOUNDCLOUD: ' + q;
+          spEmbed.style.display = 'block';
+          spEmbed.height = '166';
+          spEmbed.src = srcMatch[1];
+          setTimeout(() => player.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
+          return;
+        }
+      }
+    } catch { /* fall through to widget fallback */ }
+
+    // Fallback: SC widget API with search URL (also free, full tracks)
+    try {
+      const scTrackUrl = `https://soundcloud.com/search/sounds?q=${encQ}`;
+      const widgetSrc = `https://w.soundcloud.com/player/?url=${encodeURIComponent(scTrackUrl)}&color=%23f5c800&auto_play=true&hide_related=false&show_comments=false&show_user=true&show_reposts=false&show_teaser=false`;
+      label.textContent = '☁ SOUNDCLOUD: ' + q;
+      spEmbed.style.display = 'block';
+      spEmbed.height = '166';
+      spEmbed.src = widgetSrc;
+    } catch {
+      label.textContent = '⚠️ SoundCloud search failed';
+      spFb.style.display = 'block';
+      spFb.innerHTML = `
+        <div style="font-size:22px;margin-bottom:10px">☁️</div>
+        <div style="margin-bottom:14px;line-height:1.5;color:var(--muted)">Could not load SoundCloud.<br>Open it directly:</div>
+        <a href="https://soundcloud.com/search?q=${encQ}" target="_blank"
+           style="display:inline-block;padding:12px 28px;background:#ff5500;color:#fff;border-radius:10px;font-weight:700;text-decoration:none;font-size:14px">
+          ☁ Open SoundCloud
+        </a>`;
+    }
   }
 
   setTimeout(() => player.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
 }
 
-function embedSpotifyDirect() {
-  const url = (document.getElementById('spDirectUrl')?.value || '').trim();
-  if (!url) return;
-  const match = url.match(/open\.spotify\.com\/(track|album|playlist|episode|show)\/([a-zA-Z0-9]+)/);
-  if (!match) { showToast('⚠️ Paste a valid Spotify link (track, album, playlist)', 'pink'); return; }
-  const [, type, id] = match;
+function embedSoundCloudDirect() {
+  const url = (document.getElementById('scDirectUrl')?.value || '').trim();
+  if (!url || !url.includes('soundcloud.com')) { showToast('⚠️ Paste a valid SoundCloud link', 'pink'); return; }
   const spEmbed = document.getElementById('spEmbed');
   const spFb = document.getElementById('spFallback');
   if (spFb) spFb.style.display = 'none';
+  spEmbed.height = '166';
   spEmbed.style.display = 'block';
-  spEmbed.src = `https://open.spotify.com/embed/${type}/${id}?utm_source=generator&theme=0`;
-  document.getElementById('musicNowLabel').textContent = '● SPOTIFY: ' + type;
+  spEmbed.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&color=%23f5c800&auto_play=true&hide_related=false&show_comments=false&show_user=true`;
+  document.getElementById('musicNowLabel').textContent = '☁ SOUNDCLOUD';
 }
 
 function closeMusicPlayer() {
